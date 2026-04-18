@@ -43,9 +43,21 @@ document.getElementById("clear-all").addEventListener("click", () => {
 });
 
 /* ───── STT ───── */
+let currentRec = null;
+let currentRecBtn = null;
+
 document.querySelectorAll(".stt-btn").forEach((btn) => {
   btn.addEventListener("click", () => startSTT(btn));
 });
+
+function stopCurrentRec() {
+  if (currentRec) {
+    try { currentRec.abort(); } catch {}
+  }
+  currentRec = null;
+  if (currentRecBtn) currentRecBtn.classList.remove("recording");
+  currentRecBtn = null;
+}
 
 function startSTT(btn) {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -53,22 +65,64 @@ function startSTT(btn) {
     toast("이 브라우저는 음성 입력을 지원하지 않아요");
     return;
   }
+
+  // 같은 버튼 재클릭 → 토글로 중단
+  if (currentRec && currentRecBtn === btn) {
+    stopCurrentRec();
+    return;
+  }
+  // 다른 버튼이 녹음 중이면 먼저 중단
+  if (currentRec) stopCurrentRec();
+
   const targetId = btn.dataset.target;
   const textarea = document.getElementById(targetId);
+  if (!textarea) {
+    toast("입력 칸을 찾을 수 없어요");
+    return;
+  }
+
   const rec = new SpeechRecognition();
   rec.lang = "ko-KR";
   rec.interimResults = false;
   rec.maxAlternatives = 1;
+  rec.continuous = false;
 
-  btn.classList.add("recording");
   rec.onresult = (e) => {
     const text = e.results[0][0].transcript;
     const existing = textarea.value.trim();
     textarea.value = existing ? `${existing} ${text}` : text;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
   };
-  rec.onerror = () => toast("음성 인식에 실패했어요");
-  rec.onend = () => btn.classList.remove("recording");
-  rec.start();
+  rec.onerror = (e) => {
+    const err = e.error || "unknown";
+    if (err === "not-allowed" || err === "service-not-allowed") {
+      toast("마이크 권한이 필요해요");
+    } else if (err === "no-speech") {
+      toast("말소리가 감지되지 않았어요");
+    } else if (err !== "aborted") {
+      toast(`음성 인식 실패 (${err})`);
+    }
+  };
+  rec.onend = () => {
+    if (currentRec === rec) {
+      currentRec = null;
+      currentRecBtn = null;
+    }
+    btn.classList.remove("recording");
+  };
+
+  try {
+    rec.start();
+    currentRec = rec;
+    currentRecBtn = btn;
+    btn.classList.add("recording");
+  } catch (err) {
+    // start()는 이미 active 상태면 InvalidStateError를 던짐
+    btn.classList.remove("recording");
+    currentRec = null;
+    currentRecBtn = null;
+    toast("음성 인식을 다시 시도해주세요");
+  }
 }
 
 /* ───── 폼 제출 ───── */
@@ -177,6 +231,8 @@ function discardEntry() {
   state.pendingEntry = null;
   state.pendingFeedback = null;
   document.getElementById("feedback").classList.add("hidden");
+  stopCurrentRec();
+  document.getElementById("situation").focus();
 }
 
 /* ───── 기록 리스트 ───── */

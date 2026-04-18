@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **백엔드**: FastAPI (Vercel @vercel/python 서버리스 함수)
 - **프론트엔드**: Jinja2 템플릿 + Vanilla JS (번들러 없음)
-- **LLM**: MiniMax Token Plan API (기본 `MiniMax-M2` — Token Plan이 `MiniMax-Text-01`/`M1`은 권한 없음으로 2061 반환함. `chatcompletion_v2` OpenAI 호환)
+- **LLM**: MiniMax Token Plan API (기본 `MiniMax-M2.7` — Token Plan이 `MiniMax-Text-01`/`M1`은 권한 없음으로 2061 반환함. `chatcompletion_v2` OpenAI 호환)
 - **저장소**: 브라우저 `localStorage` (MVP) — 서버는 stateless
 - **STT**: Web Speech API (브라우저 네이티브)
 - **배포**: Vercel

@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 백엔드 | FastAPI | 비동기, Vercel 서버리스 호환, Pydantic 스키마 내장 |
 | 프론트엔드 | Jinja2 템플릿 + Vanilla JS | MVP 단계 — 별도 번들러/프레임워크 없이 경량 |
-| LLM | MiniMax (`MiniMax-M2`, Token Plan 호환) | 한국어 CBT 프레임 피드백. `chatcompletion_v2` OpenAI 호환 API |
+| LLM | MiniMax (`MiniMax-M2.7`, Token Plan 호환) | 한국어 CBT 프레임 피드백. `chatcompletion_v2` OpenAI 호환 API |
 | 저장소 | 브라우저 `localStorage` (MVP) → Vercel Postgres (2차) | MVP는 서버 상태 없이 시작, 사용자 확보 후 DB 전환 |
 | 배포 | Vercel | 서버리스 함수로 Python API + 정적 자산 서빙 |
 | STT | Web Speech API (MVP) → Whisper API (2차) | 초기에는 브라우저 내장 STT로 진입 장벽 최소화 |
@@ -50,7 +50,7 @@ LLM 피드백을 활성화하려면 환경변수 설정:
 
 ```bash
 export MINIMAX_API_KEY=...                              # 필수 — MiniMax 콘솔에서 발급
-export MINIMAX_MODEL=MiniMax-M2                         # 선택 — 기본값 (Token Plan 호환)
+export MINIMAX_MODEL=MiniMax-M2.7                       # 선택 — 기본값 (Token Plan 호환)
 export MINIMAX_BASE_URL=https://api.minimaxi.chat/v1    # 선택 — 해외 리전 기본값
 ```
 
