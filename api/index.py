@@ -150,6 +150,9 @@ def _fallback_feedback(entry: DiaryEntry) -> FeedbackPayload:
 MINIMAX_DEFAULT_BASE_URL = "https://api.minimaxi.chat/v1"
 MINIMAX_DEFAULT_MODEL = "MiniMax-M2.7"
 
+NVIDIA_DEFAULT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+NVIDIA_DEFAULT_MODEL = "moonshotai/kimi-k2.5"
+
 # 금지 문자: CJK 한자(확장A 포함), 히라가나, 가타카나, 반각 가타카나.
 # 한 글자라도 있으면 재시도/스크러빙 트리거.
 _FORBIDDEN_RE = re.compile(
@@ -195,21 +198,37 @@ def _scrub_payload(p: FeedbackPayload) -> FeedbackPayload:
     )
 
 
-async def _call_minimax(entry: DiaryEntry) -> FeedbackPayload:
-    api_key = os.environ.get("MINIMAX_API_KEY")
-    if not api_key:
-        logger.warning("MiniMax fallback: MINIMAX_API_KEY is not configured")
-        return _fallback_feedback(entry)
-
-    base_url = os.environ.get("MINIMAX_BASE_URL", MINIMAX_DEFAULT_BASE_URL).rstrip("/")
-    model = os.environ.get("MINIMAX_MODEL", MINIMAX_DEFAULT_MODEL)
-
-    user_block = (
+def _build_user_block(entry: DiaryEntry) -> str:
+    return (
         f"[상황]\n{entry.situation}\n\n"
         f"[그때 떠오른 생각]\n{entry.thought}\n\n"
         f"[스스로 시도한 재구성]\n{entry.reframe or '(작성하지 않음)'}\n\n"
         f"[직무/연차]\n{entry.job_role or '(미입력)'}"
     )
+
+
+def _parse_feedback_json(content: str) -> FeedbackPayload:
+    data = json.loads(_extract_json(content))
+    return FeedbackPayload(
+        mode="feedback",
+        empathy=_normalize_text(data.get("empathy", "")),
+        distortions=[_normalize_text(d) for d in (data.get("distortions") or [])],
+        reframe=_normalize_text(data.get("reframe", "")),
+        question=_normalize_text(data.get("question", "")),
+    )
+
+
+async def _call_minimax(entry: DiaryEntry) -> Optional[FeedbackPayload]:
+    """MiniMax 1차 시도. 성공 시 FeedbackPayload, 실패 시 None(→ NVIDIA로 폴백)."""
+    api_key = os.environ.get("MINIMAX_API_KEY")
+    if not api_key:
+        logger.warning("MiniMax skip: MINIMAX_API_KEY is not configured")
+        return None
+
+    base_url = os.environ.get("MINIMAX_BASE_URL", MINIMAX_DEFAULT_BASE_URL).rstrip("/")
+    model = os.environ.get("MINIMAX_MODEL", MINIMAX_DEFAULT_MODEL)
+
+    user_block = _build_user_block(entry)
     payload = {
         "model": model,
         "messages": [
@@ -250,19 +269,12 @@ async def _call_minimax(entry: DiaryEntry) -> FeedbackPayload:
             )
         else:
             content = str(raw_content or "")
-        data = json.loads(_extract_json(content))
-        return FeedbackPayload(
-            mode="feedback",
-            empathy=_normalize_text(data.get("empathy", "")),
-            distortions=[_normalize_text(d) for d in (data.get("distortions") or [])],
-            reframe=_normalize_text(data.get("reframe", "")),
-            question=_normalize_text(data.get("question", "")),
-        )
+        return _parse_feedback_json(content)
 
     try:
         result = await _one_shot(payload)
         if result is None:
-            return _fallback_feedback(entry)
+            return None
 
         # 가드레일 1·2: 금지 문자가 있으면 이전 응답을 assistant 메시지로 인용하고
         # 온도를 낮추며 최대 2회까지 재시도.
@@ -297,19 +309,70 @@ async def _call_minimax(entry: DiaryEntry) -> FeedbackPayload:
             if retried is not None:
                 result = retried
 
-        # 가드레일 3 (최후): 재시도 후에도 잔류한 금지 문자를 서버에서 직접 제거.
+        # 재시도 후에도 금지 문자가 남으면 MiniMax 결과 버리고 NVIDIA로 폴백.
         if _has_forbidden(result):
-            logger.info("MiniMax response contained forbidden characters; scrubbing residual characters")
-            result = _scrub_payload(result)
+            logger.warning("MiniMax response still had forbidden characters after retries; falling back to NVIDIA")
+            return None
         return result
     except Exception:
         logger.exception(
-            "MiniMax fallback: request failed for situation=%r thought=%r job_role=%r",
+            "MiniMax call failed for situation=%r thought=%r job_role=%r",
             entry.situation[:120],
             entry.thought[:120],
             (entry.job_role or "")[:60],
         )
-        return _fallback_feedback(entry)
+        return None
+
+
+async def _call_nvidia(entry: DiaryEntry) -> Optional[FeedbackPayload]:
+    """NVIDIA(moonshotai/kimi-k2.5) 2차 폴백. OpenAI 호환 엔드포인트."""
+    api_key = os.environ.get("NVIDIA_API_KEY")
+    if not api_key:
+        logger.warning("NVIDIA skip: NVIDIA_API_KEY is not configured")
+        return None
+
+    url = os.environ.get("NVIDIA_BASE_URL", NVIDIA_DEFAULT_URL).strip()
+    model = os.environ.get("NVIDIA_BASE_MODEL", NVIDIA_DEFAULT_MODEL)
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": _build_user_block(entry)},
+        ],
+        "max_tokens": 4096,
+        "temperature": 0.3,
+        "top_p": 0.9,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        body = response.json()
+        choices = body.get("choices") or []
+        if not choices:
+            logger.warning("NVIDIA fallback: empty choices in response")
+            return None
+        raw_content = choices[0].get("message", {}).get("content", "")
+        content = str(raw_content or "")
+        result = _parse_feedback_json(content)
+        # NVIDIA 응답에도 한자·가나 가드레일 적용. 잔류 문자는 서버에서 직접 제거.
+        if _has_forbidden(result):
+            logger.info("NVIDIA response contained forbidden characters; scrubbing")
+            result = _scrub_payload(result)
+        return result
+    except Exception:
+        logger.exception(
+            "NVIDIA call failed for situation=%r thought=%r job_role=%r",
+            entry.situation[:120],
+            entry.thought[:120],
+            (entry.job_role or "")[:60],
+        )
+        return None
 
 
 def _extract_json(text: str) -> str:
@@ -366,8 +429,14 @@ async def index(request: Request) -> HTMLResponse:
 async def health() -> dict:
     return {
         "ok": True,
-        "llm": bool(os.environ.get("MINIMAX_API_KEY")),
-        "model": os.environ.get("MINIMAX_MODEL", MINIMAX_DEFAULT_MODEL),
+        "primary": {
+            "configured": bool(os.environ.get("MINIMAX_API_KEY")),
+            "model": os.environ.get("MINIMAX_MODEL", MINIMAX_DEFAULT_MODEL),
+        },
+        "fallback": {
+            "configured": bool(os.environ.get("NVIDIA_API_KEY")),
+            "model": os.environ.get("NVIDIA_BASE_MODEL", NVIDIA_DEFAULT_MODEL),
+        },
     }
 
 
@@ -375,5 +444,13 @@ async def health() -> dict:
 async def analyze(entry: DiaryEntry) -> JSONResponse:
     if _contains_crisis(entry):
         return JSONResponse(CRISIS_RESPONSE)
-    payload = await _call_minimax(entry)
-    return JSONResponse(payload.model_dump())
+
+    # 1차: MiniMax → 2차: NVIDIA kimi → 최후: 템플릿
+    result = await _call_minimax(entry)
+    if result is None:
+        logger.info("Primary provider failed; trying NVIDIA fallback")
+        result = await _call_nvidia(entry)
+    if result is None:
+        logger.info("All providers failed; returning template fallback")
+        result = _fallback_feedback(entry)
+    return JSONResponse(result.model_dump())
