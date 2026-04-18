@@ -242,6 +242,15 @@ textarea:focus, input[type="text"]:focus {
   border-left-color: var(--danger);
   background: #fff5f5;
 }
+.feedback-fallback {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff5df;
+  color: #7a5b00;
+  font-size: 13px;
+  line-height: 1.5;
+}
 .feedback-section { margin-bottom: 18px; }
 .feedback-section:last-of-type { margin-bottom: 0; }
 .feedback-section.hidden { display: none; }

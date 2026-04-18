@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+logger = logging.getLogger("worrydoll.api")
 
 app = FastAPI(title="K직장인용 걱정인형", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -141,6 +143,7 @@ def _fallback_feedback(entry: DiaryEntry) -> FeedbackPayload:
         distortions=[],
         reframe="그 생각을 뒷받침하는 근거와, 반대되는 근거를 각각 하나씩 적어볼 수 있을까요?",
         question="내일 같은 상황이 오면, 오늘보다 한 가지 다르게 해볼 수 있는 행동은 무엇일까요?",
+        message="지금은 인공지능 응답이 불안정해서 기본 피드백을 보여드리고 있어요. 잠시 후 다시 시도해주세요.",
     )
 
 
@@ -195,6 +198,7 @@ def _scrub_payload(p: FeedbackPayload) -> FeedbackPayload:
 async def _call_minimax(entry: DiaryEntry) -> FeedbackPayload:
     api_key = os.environ.get("MINIMAX_API_KEY")
     if not api_key:
+        logger.warning("MiniMax fallback: MINIMAX_API_KEY is not configured")
         return _fallback_feedback(entry)
 
     base_url = os.environ.get("MINIMAX_BASE_URL", MINIMAX_DEFAULT_BASE_URL).rstrip("/")
@@ -232,11 +236,20 @@ async def _call_minimax(entry: DiaryEntry) -> FeedbackPayload:
         body = response.json()
         base_resp = body.get("base_resp") or {}
         if base_resp.get("status_code", 0) not in (0, None):
+            logger.warning("MiniMax fallback: base_resp not ok: %s", base_resp)
             return None
         choices = body.get("choices") or []
         if not choices:
+            logger.warning("MiniMax fallback: empty choices in response")
             return None
-        content = choices[0].get("message", {}).get("content", "")
+        raw_content = choices[0].get("message", {}).get("content", "")
+        if isinstance(raw_content, list):
+            content = "\n".join(
+                item.get("text", "") if isinstance(item, dict) else str(item)
+                for item in raw_content
+            )
+        else:
+            content = str(raw_content or "")
         data = json.loads(_extract_json(content))
         return FeedbackPayload(
             mode="feedback",
@@ -286,9 +299,16 @@ async def _call_minimax(entry: DiaryEntry) -> FeedbackPayload:
 
         # 가드레일 3 (최후): 재시도 후에도 잔류한 금지 문자를 서버에서 직접 제거.
         if _has_forbidden(result):
+            logger.info("MiniMax response contained forbidden characters; scrubbing residual characters")
             result = _scrub_payload(result)
         return result
     except Exception:
+        logger.exception(
+            "MiniMax fallback: request failed for situation=%r thought=%r job_role=%r",
+            entry.situation[:120],
+            entry.thought[:120],
+            (entry.job_role or "")[:60],
+        )
         return _fallback_feedback(entry)
 
 

@@ -182,6 +182,12 @@ function renderFeedback(data) {
   }
 
   const tpl = document.getElementById("feedback-template").content.cloneNode(true);
+  if (data.mode === "fallback" && data.message) {
+    const notice = document.createElement("div");
+    notice.className = "feedback-fallback";
+    notice.textContent = data.message;
+    tpl.querySelector(".feedback-card").prepend(notice);
+  }
   tpl.querySelector(".empathy").textContent = data.empathy || "이야기를 들려주셔서 고마워요.";
 
   const distortEl = tpl.querySelector(".distortions");
